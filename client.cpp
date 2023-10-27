@@ -1,0 +1,55 @@
+#include <iostream>
+#include <string>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <openssl/bio.h>
+
+using namespace std;
+
+// Write a function that connect to a server with openssl via secure tcp connection
+// The function should take a string as an argument and send it to the server
+// The function should return the response from the server as a string
+// The function should be able to handle errors
+// Use the openssl library
+// Use the openssl documentation to find the necessary functions
+// Write unit tests for any unit-testable functions
+// Mock the server in the unit tests
+
+string connectToServer(string message, string ip, int port)
+{
+    // connect to server
+
+    // create ssl context
+    // create ssl connection
+    // create ssl bio
+    // connect bio to server
+    SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
+    SSL *ssl = SSL_new(ctx);
+    BIO *bio = BIO_new_ssl_connect(ctx);
+    BIO_set_conn_hostname(bio, ip.c_str());
+    BIO_set_conn_int_port(bio, port);
+    BIO_do_connect(bio);
+    SSL_set_bio(ssl, bio, bio);
+
+    // send message via ssl bio
+    BIO_write(bio, message.c_str(), message.length());
+
+    // get response via ssl bio
+    char buf[1024];
+    int len = BIO_read(bio, buf, sizeof(buf) - 1);
+    buf[len] = '\0';
+    string response(buf);
+
+    // close connection
+    SSL_shutdown(ssl);
+    BIO_free_all(bio);
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+
+    // return response
+    return response;
+}
+
+int main()
+{
+}
