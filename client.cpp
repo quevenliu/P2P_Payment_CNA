@@ -1,118 +1,48 @@
 #include <iostream>
 #include <string>
 #include <cstdlib> 
-#include <openssl/ssl.h>
-#include <openssl/err.h>
-#include <openssl/bio.h>
-#include <openssl/conf.h>
+#include <cstring>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
 
 using namespace std;
 
-#define CA_PATH "/home/liu/ssl/RootCACert.pem"
+//g++ client.cpp -o client
 
-// Write a function that connect to a server with openssl via secure tcp connection
-// The function should take a string as an argument and send it to the server
-// The function should return the response from the server as a string
-// The function should be able to handle errors
-// Use the openssl library
-// Use the openssl documentation to find the necessary functions
-// Write unit tests for any unit-testable functions
-// Mock the server in the unit tests
-
-
-void handleFailure(string message = "Error: Failure in SSL library.\n")
+string sendToServer(string message, int clientSocket, struct sockaddr_in serverAddr)
 {
-    cout << message << endl;
-    abort();
-}
 
-void init_openssl_library()
-{
-  (void)SSL_library_init();
-
-  SSL_load_error_strings();
-
-}
-
-int verify_callback(int preverify, X509_STORE_CTX* x509_ctx)
-{
-    int depth = X509_STORE_CTX_get_error_depth(x509_ctx);
-    int err = X509_STORE_CTX_get_error(x509_ctx);
-    
-    X509* cert = X509_STORE_CTX_get_current_cert(x509_ctx);
-    X509_NAME* iname = cert ? X509_get_issuer_name(cert) : NULL;
-    X509_NAME* sname = cert ? X509_get_subject_name(cert) : NULL;
-
-    return preverify;
-}
-
-void setup_ctx(SSL_CTX* ctx)
-{
-    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, verify_callback);
-
-    if (SSL_CTX_load_verify_locations(ctx, CA_PATH, NULL) <= 0)
-    {
-        SSL_CTX_free(ctx);
-        cout << "Error loading CA file" << endl;
-        exit(EXIT_FAILURE);
+    if (send(clientSocket, message.c_str(), strlen(message.c_str()), 0) == -1) {
+        std::cerr << "Error sending data to the server" << std::endl;
+        close(clientSocket);
+        return "";
     }
-}
 
+    char buffer[1024];
+    int bytesRead = recv(clientSocket, buffer, sizeof(buffer), 0);
+    if (bytesRead == -1) {
+        std::cerr << "Error receiving data from the server" << std::endl;
+        close(clientSocket);
+        return "";
+    }
 
-void verify(SSL* ssl)
-{
-    X509* cert = SSL_get_peer_certificate(ssl);
-    if(cert) { X509_free(cert); }
-    if(NULL == cert) handleFailure("Error: Could not get a certificate from: %s.\n");
-    long res = SSL_get_verify_result(ssl);
-    if(!(X509_V_OK == res)) handleFailure("Error: Verification failed: %i.\n");
-}
+    buffer[bytesRead] = '\0';
 
-string connectToServer(string message, string ip, int port, SSL* ssl, SSL_CTX* ctx)
-{
+    std::string receivedData(buffer);
 
-    BIO *bio = BIO_new_ssl_connect(ctx);
-    BIO_set_conn_hostname(bio, ip.c_str());
-    BIO_set_conn_port(bio, port);
-    BIO_do_connect(bio);
-
-    long res = BIO_do_handshake(bio);
-    if(!(1 == res)) handleFailure("Error: Could not build a SSL session to: %s.\n");
-
-    SSL_set_bio(ssl, bio, bio);
-
-    verify(ssl);
-
-    BIO_write(bio, message.c_str(), message.length());
-
-    char buf[1024];
-    int len = BIO_read(bio, buf, sizeof(buf) - 1);
-    buf[len] = '\0';
-    string response(buf);
-
-    // close connection
-    SSL_shutdown(ssl);
-    BIO_free_all(bio);
-    SSL_free(ssl);
-    SSL_CTX_free(ctx);
-
-    // return response
-    return response;
+    return receivedData;
 }
 
 int main()
 {
-
-    BIO *web = NULL;
-    SSL *ssl = NULL;
-
-    init_openssl_library();
-
-    SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
-
-    setup_ctx(ctx);
-
-    string username = "";
+    int clientSocket = socket(AF_INET, SOCK_STREAM, 0);
+    if (clientSocket == -1) {
+        std::cerr << "Error creating socket" << std::endl;
+        return 1;
+    }
 
     string ip;
     int port;
@@ -122,18 +52,34 @@ int main()
     cout << "Enter port: ";
     cin >> port;
 
-    BIO_get_ssl(web, &ssl);
-    if(!(ssl != NULL)) handleFailure("Error: Could not get SSL handle.\n");
+    struct sockaddr_in serverAddr;
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(port); 
+    serverAddr.sin_addr.s_addr = inet_addr(ip.c_str());
 
-    long res = SSL_set_tlsext_host_name(ssl, ip.c_str());
-    if(!(1 == res)) handleFailure("Error: Could not set TLS hostname extension.\n");
+    if (connect(clientSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) == -1) {
+            std::cerr << "Error connecting to the server" << std::endl;
+            close(clientSocket);
+            return 1;
+    }
 
-    char choice;
+    string username = "";
+
+    struct sockaddr_in localAddr;
+    socklen_t addrSize = sizeof(localAddr);
+    if (getsockname(clientSocket, (struct sockaddr*)&localAddr, &addrSize) == -1) {
+        std::cerr << "Error getting local socket address" << std::endl;
+        close(clientSocket);
+        return 1;
+    }
+    uint16_t localPort = ntohs(localAddr.sin_port);
+
+
+   char choice;
     
     do {
-        system("clear"); // Clear the screen (for Linux/macOS)
+        system("clear"); 
 
-        // Display the menu options
         std::cout << "Select an option:" << std::endl;
         std::cout << "1. Register" << std::endl;
         std::cout << "2. Login" << std::endl;
@@ -141,18 +87,20 @@ int main()
         std::cout << "4. Transaction"   << std::endl;
         std::cout << "0. Exit" << std::endl;
         
-        choice = getchar(); 
+        cin >> choice;
         string message;
         string receiver;
 
         switch (choice) {
             case '1':
+                cout << "Enter username: ";
                 cin >> username;
                 message = "REGISTER#" + username;
                 break;
             case '2':
-                cin >> username;
-                message = username + "#" + to_string(port);
+                cout << "Enter username: ";
+                cin >> username;                
+                message = username + "#" + to_string(localPort);
                 break;
             case '3':
                 message = "List";
@@ -178,11 +126,13 @@ int main()
                 break;
         }
 
-        cout << connectToServer(message, ip, port, ssl, ctx) << endl;
+        cout << sendToServer(message, clientSocket, serverAddr) << endl;
         
-        // Wait for user to press a key to continue
         std::cout << "Press Enter to continue..." << std::endl;
-        getchar(); // Discard the newline character
+
+        std::cin.ignore();
+        std::cin.get();
+        
         
     } while (choice != '0');
     
