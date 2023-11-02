@@ -7,12 +7,15 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <thread>
+#include <vector>
 
 using namespace std;
 
 //g++ client.cpp -o client
 
-string sendToServer(string message, int clientSocket, struct sockaddr_in serverAddr)
+
+string sendToServer(string message, int clientSocket, bool getMessage=true)
 {
 
     if (send(clientSocket, message.c_str(), strlen(message.c_str()), 0) == -1) {
@@ -21,6 +24,9 @@ string sendToServer(string message, int clientSocket, struct sockaddr_in serverA
         return "";
     }
 
+    if (!getMessage) {
+        return "Send success";
+    }
     char buffer[1024];
     int bytesRead = recv(clientSocket, buffer, sizeof(buffer), 0);
     if (bytesRead == -1) {
@@ -36,21 +42,152 @@ string sendToServer(string message, int clientSocket, struct sockaddr_in serverA
     return receivedData;
 }
 
-int main()
+int myAccept(int listenerSocket, int& socket) {
+
+    socket = accept(listenerSocket, NULL, NULL);
+    return socket;
+}
+
+void listener(int listenerSocket, int clientSocket) {
+
+    int socket = -1;
+    while (myAccept(listenerSocket, socket) != -1) {
+
+        if (socket == -1) {
+            std::cerr << "Error accepting connection" << std::endl;
+            continue;
+        }
+
+        char buffer[1024];
+
+        int bytesRead = recv(socket, buffer, sizeof(buffer), 0);
+        if (bytesRead == -1) {
+            std::cerr << "Error receiving data from the server" << std::endl;
+            close(socket);
+            continue;
+        }
+
+        buffer[bytesRead] = '\0';
+
+        std::string receivedData(buffer);
+
+        string serverMsg = sendToServer(receivedData, clientSocket);
+
+        //Return to sender
+        if (send(socket, serverMsg.c_str(), strlen(serverMsg.c_str()), 0) == -1) {
+            std::cerr << "Error sending data to the server" << std::endl;
+            close(socket);
+            continue;
+        }
+
+        close(socket);
+    }
+
+    close(listenerSocket);
+}
+
+vector<string> getReceiverIPAndPort(string receiverID, string listResult){
+
+    /*
+    Return value format:
+
+    <accountBalance><CRLF>
+    <serverPublicKey><CRLF>
+    <number of accounts online><CRLF>
+    <userAccount1>#<userAccount1_IPaddr>#<userAccount1_portNum><CRLF>
+    <userAccount2>#<userAccount2_ IPaddr>#<userAccount2_portNum><CRLF>
+
+    return format: vector([ip, port])
+    */
+
+    int pos = listResult.find(receiverID);
+    if (pos == string::npos) {
+        return vector<string>();
+    }
+
+    int pos1 = listResult.find("#", pos);
+    int pos2 = listResult.find("#", pos1+1);
+    int pos3 = listResult.find("\n", pos2+1);
+
+    string receiverIP = listResult.substr(pos1+1, pos2-pos1-1);
+    string receiverPort = listResult.substr(pos2+1, pos3-pos2);
+
+    vector<string> result;
+    result.push_back(receiverIP);
+    result.push_back(receiverPort);
+
+    return result;
+    
+}
+
+string transfer(string receiver, int amount, string username, int clientSocket) {
+
+    string listResult = sendToServer("List", clientSocket);
+    vector<string> receiverIPAndPort = getReceiverIPAndPort(receiver, listResult);
+
+    if (receiverIPAndPort.size() == 0) {
+        return "Receiver not found";
+    }
+
+    string ip = receiverIPAndPort[0];
+    int port = atoi(receiverIPAndPort[1].c_str());
+
+    cout << "Receiver IP: " << ip << endl;
+    cout << "Receiver port: " << port << endl;
+
+    int receiverSocket = socket(AF_INET, SOCK_STREAM, 0);
+    if (receiverSocket == -1) {
+        std::cerr << "Error creating socket" << std::endl;
+        return "Error";
+    }
+
+    struct sockaddr_in receiverAddr;
+    receiverAddr.sin_family = AF_INET;
+    receiverAddr.sin_port = htons(port); 
+    receiverAddr.sin_addr.s_addr = inet_addr(ip.c_str());
+
+    if (connect(receiverSocket, (struct sockaddr*)&receiverAddr, sizeof(receiverAddr)) == -1) {
+            std::cerr << "Error connecting to the server" << std::endl;
+            close(receiverSocket);
+            return "Error";
+    }
+
+    string message = username + "#" + to_string(amount) + "#" + receiver;
+
+    string response = sendToServer(message, receiverSocket, false);
+
+    cout << "Transfer message sent to receiver" << endl;
+
+    if (response == "Success") {
+        return "Transfer success";
+    } else {
+        return response;
+    }
+}
+
+int main(int argc, char** argv)
 {
+
+    string ip;
+    int port;
+    int localPort;
+
+    if (argc == 4) {
+        ip = argv[1];
+        port = atoi(argv[2]);
+        localPort = atoi(argv[3]);
+    } 
+    else {
+        std::cerr << "Usage: ./client <server_ip> <server_port> <client_port>" << std::endl;
+        return 1;
+    }
+
+    //usage: ./client <server_ip> <server_port> <client_port>
     int clientSocket = socket(AF_INET, SOCK_STREAM, 0);
     if (clientSocket == -1) {
         std::cerr << "Error creating socket" << std::endl;
         return 1;
     }
-
-    string ip;
-    int port;
-
-    cout << "Enter IP address: ";
-    cin >> ip;
-    cout << "Enter port: ";
-    cin >> port;
 
     struct sockaddr_in serverAddr;
     serverAddr.sin_family = AF_INET;
@@ -65,20 +202,36 @@ int main()
 
     string username = "";
 
-    struct sockaddr_in localAddr;
-    socklen_t addrSize = sizeof(localAddr);
-    if (getsockname(clientSocket, (struct sockaddr*)&localAddr, &addrSize) == -1) {
-        std::cerr << "Error getting local socket address" << std::endl;
-        close(clientSocket);
+
+    int listenerSocket = socket(AF_INET, SOCK_STREAM, 0);
+    if (listenerSocket == -1) {
+        std::cerr << "Error creating listener socket" << std::endl;
+        close(listenerSocket);
         return 1;
     }
-    uint16_t localPort = ntohs(localAddr.sin_port);
 
+    struct sockaddr_in listenerAddr;
+    listenerAddr.sin_family = AF_INET;
+    listenerAddr.sin_port = htons(localPort);
+    listenerAddr.sin_addr.s_addr = INADDR_ANY;
 
-   char choice;
+    if (bind(listenerSocket, (struct sockaddr*)&listenerAddr, sizeof(listenerAddr)) == -1) {
+        std::cerr << "Error binding listener socket" << std::endl;
+        close(listenerSocket);
+    }
+
+    if (listen(listenerSocket, 5) == -1) {
+        std::cerr << "Error listening on port" << std::endl;
+        close(listenerSocket);
+    }
+
+    cout << "Listening on port " << localPort << endl;
+
+    std::thread listenerThread(listener, listenerSocket, clientSocket);
+
+    char choice;
     
     do {
-        system("clear"); 
 
         std::cout << "Select an option:" << std::endl;
         std::cout << "1. Register" << std::endl;
@@ -115,27 +268,47 @@ int main()
                 cin >> receiver;
                 cout << "Enter amount: ";
                 cin >> amount;
-                message = username + "#" + to_string(amount) + "#" + receiver;
+
+                if (receiver == username) {
+                    cout << "Cannot transfer to yourself" << endl;
+                    break;
+                }
+
+                cout << transfer(receiver, amount, username, clientSocket) << endl;
+
                 break;
             case '0':
                 std::cout << "Exiting..." << std::endl;
                 message = "Exit";
+                sendToServer(message, clientSocket);
+                exit(0);
                 break;
             default:
                 std::cout << "Invalid option. Please try again." << std::endl;
                 break;
         }
 
-        cout << sendToServer(message, clientSocket, serverAddr) << endl;
+        if (choice != '4')
+        {
+            string response = sendToServer(message, clientSocket);
+            if (response == "Transfer OK!")
+                response = sendToServer(message, clientSocket);
+            cout << sendToServer(message, clientSocket) << endl;
+        }
         
         std::cout << "Press Enter to continue..." << std::endl;
 
         std::cin.ignore();
         std::cin.get();
+
+        system("clear"); 
         
         
     } while (choice != '0');
     
+    close(clientSocket);
+    listenerThread.join();
+
     return 0;
 
 }
