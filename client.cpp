@@ -29,6 +29,7 @@ string sendToServer(string message, int clientSocket, bool getMessage = true)
         return "Send success";
     }
     char buffer[1024];
+    memset(buffer, 0, sizeof(buffer));
     int bytesRead = recv(clientSocket, buffer, sizeof(buffer), 0);
     if (bytesRead == -1)
     {
@@ -37,10 +38,16 @@ string sendToServer(string message, int clientSocket, bool getMessage = true)
         return "";
     }
 
+    if (bytesRead == 0)
+    {
+        std::cout << "No message received." << std::endl;
+        close(clientSocket);
+        return "";
+    }
+
     buffer[bytesRead] = '\0';
 
     std::string receivedData(buffer);
-
     return receivedData;
 }
 
@@ -86,11 +93,8 @@ void listener(int listenerSocket, int clientSocket)
         if (send(socket, serverMsg.c_str(), strlen(serverMsg.c_str()), 0) == -1)
         {
             std::cerr << "Error sending data to the server" << std::endl;
-            close(socket);
             continue;
         }
-
-        close(socket);
     }
 
     close(listenerSocket);
@@ -135,6 +139,12 @@ string transfer(string receiver, int amount, string username, int clientSocket)
 {
 
     string listResult = sendToServer("List", clientSocket);
+
+    while (listResult.find("Transfer OK") != string::npos)
+    {
+        listResult = sendToServer("List", clientSocket);
+    }
+
     vector<string> receiverIPAndPort = getReceiverIPAndPort(receiver, listResult);
 
     if (receiverIPAndPort.size() == 0)
@@ -315,12 +325,13 @@ int main(int argc, char **argv)
             std::cout << "Invalid option. Please try again." << std::endl;
             break;
         }
-
         if (choice != '4')
         {
             string response = sendToServer(message, clientSocket);
-            while (response == "Transfer OK!")
+            while (response.find("Transfer OK") != string::npos)
+            {
                 response = sendToServer(message, clientSocket);
+            }
             cout << response << endl;
         }
 
