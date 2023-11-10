@@ -54,13 +54,6 @@ string sendToServer(string message, int clientSocket, bool getMessage = true)
     return receivedData;
 }
 
-int myAccept(int listenerSocket, int &socket)
-{
-
-    socket = accept(listenerSocket, NULL, NULL);
-    return socket;
-}
-
 void listener(int listenerSocket, int clientSocket)
 {
 
@@ -68,8 +61,8 @@ void listener(int listenerSocket, int clientSocket)
     {
         struct sockaddr_in clientConnection;
         int clientRecv = 0;
-        unsigned int addrlen = sizeof(clientRecv);
-        clientRecv = accept(listenerSocket, (struct sockaddr *) &clientConnection, &addrlen);
+        unsigned int len = sizeof(clientRecv);
+        clientRecv = accept(listenerSocket, (struct sockaddr *) &clientConnection, &len);
 
         char buffer[1024] = {0};
 
