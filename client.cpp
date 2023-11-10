@@ -48,6 +48,9 @@ string sendToServer(string message, int clientSocket, bool getMessage = true)
     buffer[bytesRead] = '\0';
 
     std::string receivedData(buffer);
+
+    memset(buffer, 0, sizeof(buffer));
+
     return receivedData;
 }
 
@@ -61,40 +64,19 @@ int myAccept(int listenerSocket, int &socket)
 void listener(int listenerSocket, int clientSocket)
 {
 
-    int socket = -1;
-    while (myAccept(listenerSocket, socket) != -1)
+    while (true)
     {
+        struct sockaddr_in clientConnection;
+        int clientRecv = 0;
+        unsigned int addrlen = sizeof(clientRecv);
+        clientRecv = accept(listenerSocket, (struct sockaddr *) &clientConnection, &addrlen);
 
-        if (socket == -1)
-        {
-            std::cerr << "Error accepting connection" << std::endl;
-            continue;
-        }
+        char buffer[1024] = {0};
 
-        char buffer[1024];
+        recv(clientRecv,buffer,sizeof(buffer),0);
+        send(clientSocket,buffer,sizeof(buffer),0);
 
         memset(buffer, 0, sizeof(buffer));
-
-        int bytesRead = recv(socket, buffer, sizeof(buffer), 0);
-        if (bytesRead == -1)
-        {
-            std::cerr << "Error receiving data from the server" << std::endl;
-            close(socket);
-            continue;
-        }
-
-        buffer[bytesRead] = '\0';
-
-        std::string receivedData(buffer);
-
-        string serverMsg = sendToServer(receivedData, clientSocket);
-
-        // Return to sender
-        if (send(socket, serverMsg.c_str(), strlen(serverMsg.c_str()), 0) == -1)
-        {
-            std::cerr << "Error sending data to the server" << std::endl;
-            continue;
-        }
     }
 
     close(listenerSocket);
