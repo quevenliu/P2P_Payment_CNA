@@ -16,10 +16,11 @@
 using namespace std;
 
 string serverPK = "";
+class User;
+map<string, User*> userList;
 
 class User {
 private:
-    static map<string, User*> userList;
     string username;
     string publicKey;
     string ip;
@@ -64,29 +65,33 @@ public:
         this->onlineStatus = false;
         return "Bye";
     }
-    string transfer(string receiver, int amount, string username) {
-        if (receiver != username)
-            return "220 AUTH_FAIL";
-        if (userList.find(receiver) == userList.end()) {
+    string transfer(string from, int amount) {
+        if (userList.find(from) == userList.end()) {
             return "220 AUTH_FAIL";
         }
-        if (userList.find(username) == userList.end()) {
-            return "404 Not Found";
-        }
-        if (userList[username]->balance < amount) {
+        if (userList[from]->balance < amount) {
             return "420 TRANSFER_FAIL";
         }
-        userList[username]->balance -= amount;
-        userList[receiver]->balance += amount;
+        userList[from]->balance -= amount;
+        this->balance += amount;
         return "Transfer OK";
     }
-    static User* findUser(string username) {
-        if (userList.find(username) == userList.end()) {
-            return NULL;
-        }
-        return userList[username];
+
+    string getUserName() {
+        return this->username;
+    }
+
+    ~User() {
+        userList.erase(this->username);
     }
 };
+
+User* findUser(string username) {
+    if (userList.find(username) == userList.end()) {
+        return NULL;
+    }
+    return userList[username];
+}
 
 struct connection {
     int socket;
@@ -94,20 +99,20 @@ struct connection {
     int port;
 };
 
-void connThread(connection* conn) {
+void connThread(connection* conn, bool verbose = false) {
     int socket = conn->socket;
     string ip = conn->ip;
     int port = conn->port;
 
     char clientBuffer[1024] = {0};
     char serverBuffer[1024] = {0};
+    User* currUser = NULL;
 
     while (true)
     {
         if (recv(socket, clientBuffer, sizeof(clientBuffer), 0) > 0) {
             string clientMessage = string(clientBuffer);
             string serverMessage = ""; 
-            User* currUser = NULL;
 
             int firstSign = clientMessage.find("#");
             int secondSign = (firstSign != string::npos)? clientMessage.find("#", firstSign + 1) : string::npos;
@@ -115,8 +120,12 @@ void connThread(connection* conn) {
 
             if (clientMessage.find("REGISTER") != string::npos) {
                 try {
-                    string username = clientMessage.substr(clientMessage.find("#"));
+                    string username = clientMessage.substr(firstSign + 1);
                     string publicKey = "";
+
+                    if (verbose)
+                        cout << username << " register" << endl;
+
                     currUser = new User(username, publicKey, ip, port);
                     serverMessage = "100 OK";
                 } catch (const char* e) {
@@ -125,11 +134,19 @@ void connThread(connection* conn) {
                     serverMessage = "500 Internal Server Error";
                 }
             } else if (currUser == NULL) {
-                serverMessage = "220 AUTH_FAIL";
+                serverMessage = "220 AUTH_FAIL\nNot logged in";
             } 
             else if (clientMessage.find("List") != string::npos) {
+
+                if (verbose)
+                    cout << currUser->getUserName() << " list" << endl;
+
                 serverMessage = currUser->listUsers();
             } else if (clientMessage.find("Exit") != string::npos) {
+
+                if (verbose)
+                    cout << currUser->getUserName() << " exit" << endl;
+
                 serverMessage = currUser->userLogout();
             } else if (firstSign != string::npos) {
                 if (secondSign != string::npos) {
@@ -137,19 +154,32 @@ void connThread(connection* conn) {
                         string username = clientMessage.substr(0, firstSign);
                         int amount = stoi(clientMessage.substr(firstSign + 1, secondSign - firstSign - 1));
                         string receiver = clientMessage.substr(secondSign + 1);
-                        serverMessage = currUser->transfer(receiver, amount, username);
+                        
+                        if (verbose)
+                            cout << username << " transfer " << amount << " to " << receiver << endl;
+                        if (receiver != currUser->getUserName()) {
+                            serverMessage = "220 AUTH_FAIL";
+                        }
+                        else
+                            serverMessage = currUser->transfer(username, amount);
+                        if (verbose)
+                            cout << serverMessage << endl;
+
                     } catch (exception& e) {
                         serverMessage = "500 Internal Server Error";
                     }
                 } else {
                     try {
                         string username = clientMessage.substr(0, firstSign);
-                        currUser = User::findUser(username);
+                        int transferPort = stoi(clientMessage.substr(firstSign + 1));
+                        if (verbose)
+                            cout << username << " login" << endl;
+                        currUser = findUser(username);
                         if (currUser == NULL) {
-                            serverMessage = "220 AUTH_FAIL";
+                            serverMessage = "220 AUTH_FAIL\nNot Registered";
                         }
                         else
-                            serverMessage = currUser->userLogin(ip, port);
+                            serverMessage = currUser->userLogin(ip, transferPort);
                         
                     } catch (exception& e) {
                         serverMessage = "500 Internal Server Error";
@@ -168,14 +198,16 @@ void connThread(connection* conn) {
             memset(serverBuffer, 0, sizeof(serverBuffer));
         }
     }
+    close (conn->socket);
 }   
 
 int main(int argc, char* argv[]) {
-    if (argc != 2) {
-        cout << "Usage: ./server <port>" << endl;
+    if (argc == 1 || (argc == 3 && strcmp(argv[2], "-verbose") != 0) || argc > 3) {
+        cout << "Usage: ./server <port> [-verbose]" << endl;
         return 1;
     }
     int port = atoi(argv[1]);
+    bool verbose = (argc == 3 && strcmp(argv[2], "-verbose") == 0);
     int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
     if (serverSocket < 0) {
         cout << "Socket creation error" << endl;
@@ -206,8 +238,9 @@ int main(int argc, char* argv[]) {
         conn->ip = inet_ntoa(clientAddr.sin_addr);
         conn->port = ntohs(clientAddr.sin_port);
         cout << "New connection from " << conn->ip << ":" << conn->port << endl;
-        thread t(connThread, conn);
+        thread t(connThread, conn, verbose);
         t.detach();
     }
+    close (serverSocket);
     return 0;
 }
