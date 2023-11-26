@@ -10,23 +10,30 @@
 #include <thread>
 #include <vector>
 #include <openssl/ssl.h>
+#include <openssl/crypto.h>
 #include <openssl/err.h>
-#include <openssl/bio.h>
-#include <openssl/conf.h>
-
+#include <openssl/rsa.h>
+#include <openssl/pem.h>
 using namespace std;
-#define CA_PATH "/home/liu/ssl"
+#define CA_PATH "./keys"
+#define KEY_FILE "keys/client.key"
+#define CERT_FILE "keys/client.crt"
+#define CA_FILE "keys/CA.pem"
 
 
 // g++ client.cpp -o client
 
-string sendToServer(string message, int clientSocket, bool getMessage = true)
+void print(string message)
+{
+    cout << message << endl;
+}
+
+string sendToServer(string message, SSL* ssl, bool getMessage = true)
 {
 
-    if (send(clientSocket, message.c_str(), strlen(message.c_str()), 0) == -1)
+    if (SSL_write(ssl, message.c_str(), strlen(message.c_str()), 0) == -1)
     {
         std::cerr << "Error sending data to the server" << std::endl;
-        close(clientSocket);
         return "";
     }
 
@@ -36,18 +43,17 @@ string sendToServer(string message, int clientSocket, bool getMessage = true)
     }
     char buffer[1024];
     memset(buffer, 0, sizeof(buffer));
-    int bytesRead = recv(clientSocket, buffer, sizeof(buffer), 0);
+    int bytesRead = SSL_read(ssl, buffer, sizeof(buffer), 0);
+    puts(buffer);
     if (bytesRead == -1)
     {
         std::cerr << "Error receiving data from the server" << std::endl;
-        close(clientSocket);
         return "";
     }
 
     if (bytesRead == 0)
     {
         std::cout << "No message received." << std::endl;
-        close(clientSocket);
         return "";
     }
 
@@ -177,21 +183,29 @@ string transfer(string receiver, int amount, string username, int clientSocket)
 int main(int argc, char **argv)
 {
 
-    SSL_load_error_strings();
-    ERR_load_BIO_strings();
-    OpenSSL_add_all_algorithms();
+    string cmd =  "openssl req -x509 -sha256 -nodes -days 365 -newkey rsa:2048 -keyout client.key -out client.crt";
+    if (system(cmd.c_str()) != 0) {
+        handleFailure("Error: Could not generate client certificate.\n");
+    }
 
-    SSL_CTX * ctx = SSL_CTX_new(TLSv1_2_client_method()); 
+    SSL_library_init();
+    OpenSSL_add_all_algorithms();
+    SSL_load_error_strings();
+
+    SSL_CTX * ctx = SSL_CTX_new(SSLv23_server_method()); 
     SSL * ssl;
 
     if(! SSL_CTX_load_verify_locations(ctx, NULL, CA_PATH)) { 
         handleFailure("Error: Could not load CA file.\n"); 
     }
 
+    //Load certificate needed to be edited.
+
 
     string ip;
     int port;
     int localPort;
+    SSL *ssl;
 
     if (argc == 4)
     {
@@ -224,6 +238,26 @@ int main(int argc, char **argv)
         close(clientSocket);
         return 1;
     }
+    else 
+    {
+        SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+        SSL_CTX_load_verify_locations(ctx, CA_FILE, NULL);
+        ssl = SSL_new(ctx);
+        SSL_set_fd(ssl, clientSocket);
+
+        if (SSL_connect(ssl) == -1)
+        {
+            ERR_print_errors_fp(stderr);
+            return 1;
+        }
+        else
+        {
+            print("\nConnected with encryption");
+            SSL_get_cipher(ssl)
+            ShowCerts(ssl);
+        }
+    }
+
 
     string username = "";
 
@@ -234,7 +268,7 @@ int main(int argc, char **argv)
         close(listenerSocket);
         return 1;
     }
-
+    
     struct sockaddr_in listenerAddr;
     listenerAddr.sin_family = AF_INET;
     listenerAddr.sin_port = htons(localPort);
@@ -311,7 +345,7 @@ int main(int argc, char **argv)
         case '0':
             std::cout << "Exiting..." << std::endl;
             message = "Exit";
-            sendToServer(message, clientSocket);
+            sendToServer(message, ssl);
             exit(0);
             break;
         default:
@@ -320,10 +354,10 @@ int main(int argc, char **argv)
         }
         if (choice != '4')
         {
-            string response = sendToServer(message, clientSocket);
+            string response = sendToServer(message, ssl);
             while (response.find("Transfer OK") != string::npos)
             {
-                response = sendToServer(message, clientSocket);
+                response = sendToServer(message, ssl);
             }
             cout << response << endl;
         }
@@ -339,6 +373,9 @@ int main(int argc, char **argv)
 
     close(clientSocket);
     listenerThread.join();
+    SSL_shutdown(ssl);
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
 
     return 0;
 }
