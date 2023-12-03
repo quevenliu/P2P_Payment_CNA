@@ -15,13 +15,11 @@
 #include <openssl/rsa.h>
 #include <openssl/pem.h>
 using namespace std;
-#define CA_PATH "./keys"
-#define KEY_FILE "keys/client.key"
-#define CERT_FILE "keys/client.crt"
-#define CA_FILE "keys/CA.pem"
+#define CA_PATH "./client_cert"
+#define KEY_FILE "./client_cert/client.key"
+#define CERT_FILE "./client_cert/client.crt"
+#define CA_FILE "./client_cert/client.pem"
 
-
-// g++ client.cpp -o client
 
 void print(string message)
 {
@@ -31,9 +29,10 @@ void print(string message)
 string sendToServer(string message, SSL* ssl, bool getMessage = true)
 {
 
-    if (SSL_write(ssl, message.c_str(), strlen(message.c_str()), 0) == -1)
+    if (SSL_write(ssl, message.c_str(), strlen(message.c_str())) == -1)
     {
         std::cerr << "Error sending data to the server" << std::endl;
+        printf("%s", ERR_error_string(ERR_get_error(), NULL));
         return "";
     }
 
@@ -43,8 +42,7 @@ string sendToServer(string message, SSL* ssl, bool getMessage = true)
     }
     char buffer[1024];
     memset(buffer, 0, sizeof(buffer));
-    int bytesRead = SSL_read(ssl, buffer, sizeof(buffer), 0);
-    puts(buffer);
+    int bytesRead = SSL_read(ssl, buffer, sizeof(buffer));
     if (bytesRead == -1)
     {
         std::cerr << "Error receiving data from the server" << std::endl;
@@ -66,7 +64,7 @@ string sendToServer(string message, SSL* ssl, bool getMessage = true)
     return receivedData;
 }
 
-void listener(int listenerSocket, int clientSocket)
+void listener(int listenerSocket, SSL* clientSocket, SSL_CTX * ctx)
 {
 
     while (true)
@@ -76,10 +74,23 @@ void listener(int listenerSocket, int clientSocket)
         unsigned int len = sizeof(clientRecv);
         clientRecv = accept(listenerSocket, (struct sockaddr *) &clientConnection, &len);
 
+        SSL* ssl = SSL_new(ctx);
+        SSL_set_fd(ssl, clientRecv);
+
+        if (SSL_accept(ssl) == -1)
+        {
+            ERR_print_errors_fp(stderr);
+            return;
+        }
+        else
+        {
+            SSL_get_cipher(ssl);
+        }
+
         char buffer[1024] = {0};
 
-        recv(clientRecv,buffer,sizeof(buffer),0);
-        send(clientSocket,buffer,sizeof(buffer),0);
+        SSL_read(ssl,buffer,sizeof(buffer));
+        SSL_write(clientSocket,buffer,sizeof(buffer));
 
         memset(buffer, 0, sizeof(buffer));
     }
@@ -122,7 +133,7 @@ vector<string> getReceiverIPAndPort(string receiverID, string listResult)
     return result;
 }
 
-string transfer(string receiver, int amount, string username, int clientSocket)
+string transfer(string receiver, int amount, string username, SSL* clientSocket, SSL_CTX * ctx)
 {
 
     string listResult = sendToServer("List", clientSocket);
@@ -164,9 +175,23 @@ string transfer(string receiver, int amount, string username, int clientSocket)
         return "Error";
     }
 
+    SSL* ssl = SSL_new(ctx);
+    SSL_set_fd(ssl, receiverSocket);
+
+    if (SSL_connect(ssl) == -1)
+    {
+        ERR_print_errors_fp(stderr);
+        return "Error";
+    }
+    else
+    {
+        print("\nConnected with encryption");
+        SSL_get_cipher(ssl);
+    }
+
     string message = username + "#" + to_string(amount) + "#" + receiver;
 
-    string response = sendToServer(message, receiverSocket, false);
+    string response = sendToServer(message, ssl, false);
 
     cout << "Transfer message sent to receiver" << endl;
 
@@ -180,32 +205,61 @@ string transfer(string receiver, int amount, string username, int clientSocket)
     }
 }
 
+int loadCert(SSL_CTX* ctx)
+{
+    if(! SSL_CTX_load_verify_locations(ctx, NULL, CA_PATH)) { 
+        print("Error: Could not load CA file.\n"); 
+        return 1;
+    }
+
+    if (! SSL_CTX_set_default_verify_paths(ctx)) { 
+        print("Error: Could not load CA path.\n"); 
+        return 1;
+    }
+
+    if (! SSL_CTX_use_certificate_file(ctx, CERT_FILE, SSL_FILETYPE_PEM)) { 
+        print("Error: Could not load certificate file.\n"); 
+        return 1;
+    }
+
+    if (! SSL_CTX_use_PrivateKey_file(ctx, KEY_FILE, SSL_FILETYPE_PEM)) { 
+        print("Error: Could not load private key file.\n"); 
+        return 1;
+    }
+
+    if (! SSL_CTX_check_private_key(ctx)) { 
+        print("Error: Private key does not match the certificate public key.\n"); 
+        return 1;
+    }
+
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
-
-    string cmd =  "openssl req -x509 -sha256 -nodes -days 365 -newkey rsa:2048 -keyout client.key -out client.crt";
-    if (system(cmd.c_str()) != 0) {
-        handleFailure("Error: Could not generate client certificate.\n");
-    }
 
     SSL_library_init();
     OpenSSL_add_all_algorithms();
     SSL_load_error_strings();
 
-    SSL_CTX * ctx = SSL_CTX_new(SSLv23_server_method()); 
+    SSL_CTX * ctx = SSL_CTX_new(TLSv1_2_client_method()); 
     SSL * ssl;
 
-    if(! SSL_CTX_load_verify_locations(ctx, NULL, CA_PATH)) { 
-        handleFailure("Error: Could not load CA file.\n"); 
+    SSL_CTX * ctx_server = SSL_CTX_new(TLSv1_2_server_method());
+
+    if (loadCert(ctx_server) != 0)
+    {
+        return 1;
     }
 
-    //Load certificate needed to be edited.
-
-
+    if (loadCert(ctx) != 0)
+    {
+        return 1;
+    }
+    
     string ip;
     int port;
     int localPort;
-    SSL *ssl;
 
     if (argc == 4)
     {
@@ -240,8 +294,6 @@ int main(int argc, char **argv)
     }
     else 
     {
-        SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
-        SSL_CTX_load_verify_locations(ctx, CA_FILE, NULL);
         ssl = SSL_new(ctx);
         SSL_set_fd(ssl, clientSocket);
 
@@ -253,8 +305,7 @@ int main(int argc, char **argv)
         else
         {
             print("\nConnected with encryption");
-            SSL_get_cipher(ssl)
-            ShowCerts(ssl);
+            SSL_get_cipher(ssl);
         }
     }
 
@@ -288,7 +339,7 @@ int main(int argc, char **argv)
 
     cout << "Listening on port " << localPort << endl;
 
-    std::thread listenerThread(listener, listenerSocket, clientSocket);
+    std::thread listenerThread(listener, listenerSocket, ssl, ctx_server);
 
     char choice;
 
@@ -339,7 +390,7 @@ int main(int argc, char **argv)
                 break;
             }
 
-            cout << transfer(receiver, amount, username, clientSocket) << endl;
+            cout << transfer(receiver, amount, username, ssl, ctx) << endl;
 
             break;
         case '0':
