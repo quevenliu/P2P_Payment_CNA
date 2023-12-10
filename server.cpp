@@ -6,6 +6,8 @@
 #include <thread>
 #include <vector>
 #include <map>
+#include <fstream>
+#include <sstream>
 
 #include <sys/socket.h>
 #include <unistd.h>
@@ -22,6 +24,7 @@
 #define KEY_FILE "./server_cert/server.key"
 #define CERT_FILE "./server_cert/server.crt"
 #define CA_FILE "./server_cert/server.pem"
+#define BUFFER_SIZE 2048
 
 using namespace std;
 
@@ -38,7 +41,6 @@ class User
 {
 private:
     string username;
-    string publicKey;
     string ip;
     int port;
     bool onlineStatus;
@@ -46,14 +48,13 @@ private:
     static const int DEFAULT_BALANCE = 10000;
 
 public:
-    User(string username, string publicKey, string ip, int port)
+    User(string username, string ip, int port)
     {
         if (userList.find(username) != userList.end())
         {
             throw "210 FAIL";
         }
         this->username = username;
-        this->publicKey = publicKey;
         this->ip = ip;
         this->port = port;
         this->balance = User::DEFAULT_BALANCE;
@@ -137,8 +138,8 @@ void connThread(connection *conn, bool verbose = false)
     int port = conn->port;
     SSL* ssl = conn->ssl;
 
-    char clientBuffer[1024] = {0};
-    char serverBuffer[1024] = {0};
+    char clientBuffer[BUFFER_SIZE] = {0};
+    char serverBuffer[BUFFER_SIZE] = {0};
     User *currUser = NULL;
 
     while (true)
@@ -156,12 +157,11 @@ void connThread(connection *conn, bool verbose = false)
                 try
                 {
                     string username = clientMessage.substr(firstSign + 1);
-                    string publicKey = "";
                     
                     if (verbose)
                         cout << username << " register" << endl;
 
-                    currUser = new User(username, publicKey, ip, port);
+                    currUser = new User(username, ip, port);
                     serverMessage = "100 OK";
                 }
                 catch (const char *e)
@@ -259,6 +259,61 @@ void connThread(connection *conn, bool verbose = false)
     close(conn->socket);
 }
 
+std::string base64Encode(const unsigned char* input, int length) {
+    BIO *bio, *b64;
+    BUF_MEM *bufferPtr;
+
+    b64 = BIO_new(BIO_f_base64());
+    BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
+    bio = BIO_new(BIO_s_mem());
+    bio = BIO_push(b64, bio);
+
+    BIO_write(bio, input, length);
+    BIO_flush(bio);
+    BIO_get_mem_ptr(bio, &bufferPtr);
+
+    std::string result(bufferPtr->data, bufferPtr->length);
+
+    BIO_free_all(bio);
+
+    return result;
+}
+
+std::string publicKeyToString(const std::string &filePath = CA_FILE) {
+    std::ifstream fileStream(filePath.c_str(), std::ios::binary);
+    if (!fileStream.is_open()) {
+        std::cerr << "Error opening file." << std::endl;
+        return "";
+    }
+
+    std::stringstream fileContent;
+    fileContent << fileStream.rdbuf();
+    std::string pemData = fileContent.str();
+
+    BIO *bio = BIO_new_mem_buf(pemData.c_str(), -1);
+    RSA *rsa = PEM_read_bio_RSA_PUBKEY(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+
+    if (rsa == nullptr) {
+        std::cerr << "Error loading RSA public key." << std::endl;
+        return "";
+    }
+
+    unsigned char *pemPublic = nullptr;
+    int length = i2d_RSA_PUBKEY(rsa, &pemPublic);
+    if (length <= 0 || pemPublic == nullptr) {
+        RSA_free(rsa);
+        return "";
+    }
+
+    std::string publicKeyBase64 = base64Encode(pemPublic, length);
+    OPENSSL_free(pemPublic);
+    RSA_free(rsa);
+
+    return publicKeyBase64;
+}
+
+
 int main(int argc, char *argv[])
 {
 
@@ -323,6 +378,8 @@ int main(int argc, char *argv[])
         cout << "Listening error" << endl;
         return 0;
     }
+
+    serverPK = publicKeyToString();
 
     while (true)
     {

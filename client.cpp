@@ -19,7 +19,7 @@ using namespace std;
 #define KEY_FILE "./client_cert/client.key"
 #define CERT_FILE "./client_cert/client.crt"
 #define CA_FILE "./client_cert/client.pem"
-
+#define BUFFER_SIZE 2048
 
 void print(string message)
 {
@@ -40,7 +40,7 @@ string sendToServer(string message, SSL* ssl, bool getMessage = true)
     {
         return "Send success";
     }
-    char buffer[1024];
+    char buffer[BUFFER_SIZE];
     memset(buffer, 0, sizeof(buffer));
     int bytesRead = SSL_read(ssl, buffer, sizeof(buffer));
     if (bytesRead == -1)
@@ -87,7 +87,7 @@ void listener(int listenerSocket, SSL* clientSocket, SSL_CTX * ctx)
             SSL_get_cipher(ssl);
         }
 
-        char buffer[1024] = {0};
+        char buffer[BUFFER_SIZE] = {0};
 
         SSL_read(ssl,buffer,sizeof(buffer));
         SSL_write(clientSocket,buffer,sizeof(buffer));
