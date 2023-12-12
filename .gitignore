@@ -32,5 +32,3 @@
 *.app
 .vscode/settings.json
 
-/client_cert
-/server_cert
